@@ -56,6 +56,13 @@ const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => 
 })
 
 describe('DashboardPage workbench task panel', () => {
+  it('shows scoring progress for standalone scoring even before the first job completes', async () => {
+    workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'score', metrics: { ai_completed: 0, ai_total: 12 } }) })
+    render(<DashboardPage view="workbench" />)
+    expect((await screen.findByRole('progressbar', { name: 'AI 评分进度' })).getAttribute('aria-valuenow')).toBe('0')
+    expect(screen.getByText('已处理 0 / 12 · 0%')).toBeTruthy()
+  })
+
   it('groups all collection counters with separate parsing and saving failure records', async () => {
     workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'full',
       metrics: { collect_seen: 8, collect_new: 2, collect_parse_failed: 1, collect_save_failed: 1 },
@@ -481,6 +488,20 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     fireEvent.click(screen.getByText('确认开始评分'))
     expect((await screen.findAllByText('独立评分已启动，共 3 个岗位。')).length).toBeGreaterThan(0)
     await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
+  })
+
+  it('keeps the progress visible in the jobs pool after the scoring dialog closes', async () => {
+    stubDashboardFetch({
+      '/api/scoring/start': () => {
+        workbenchPayload = baseWorkbench({ task: buildTask({ mode: 'score', metrics: { ai_total: 3, ai_completed: 0 } }) })
+        return jsonResponse({ run: { remaining_job_ids: ['a', 'b', 'c'] } })
+      },
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await openScoringDialog()
+    fireEvent.click(screen.getByText('确认开始评分'))
+    await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
+    expect((await screen.findByRole('progressbar', { name: 'AI 评分进度' })).getAttribute('aria-valuenow')).toBe('0')
   })
 
   it('keeps the scoring dialog open and shows the failure inside it when the scoring start fails', async () => {

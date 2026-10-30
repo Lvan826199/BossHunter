@@ -1,0 +1,93 @@
+name: Sync upstream into personal branch
+
+on:
+  schedule:
+    # UTC; 02:17, 08:17, 14:17 and 20:17 in Asia/Shanghai.
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: personal-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'Lvan826199/BossHunter' && github.ref == 'refs/heads/codex/personal'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/personal
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Prepare merge without publishing
+        id: merge
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          python scripts/prepare_upstream_sync.py --upstream-url https://github.com/shengjidaguai-china/BossHunter.git
+
+      - uses: actions/setup-node@v4
+        if: steps.merge.outputs.changed == 'true'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: src/bosshunter/web/frontend/package-lock.json
+
+      - name: Validate merged frontend
+        if: steps.merge.outputs.changed == 'true'
+        working-directory: src/bosshunter/web/frontend
+        run: |
+          npm ci
+          npm test
+          npm run build
+
+      - name: Validate merged Python and scoring recovery
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          python -m pip install -e . pytest
+          python -m pytest tests/test_ai_credentials.py tests/test_ai_token_resilience.py tests/test_web_preflight.py tests/test_scoring_recovery.py tests/test_task_start_and_scoring_limits.py tests/test_upstream_sync.py -q
+          bosshunter --help
+          bosshunter --version
+          git diff --check
+          git diff --cached --check
+
+      - name: Publish validated merge
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          git diff --exit-code
+          git commit -m "chore: merge upstream main into codex/personal"
+          git push origin HEAD:refs/heads/codex/personal
+
+      - name: Report sync failure or resolve previous alert
+        if: always()
+        uses: actions/github-script@v7
+        env:
+          SYNC_STATUS: ${{ job.status }}
+        with:
+          script: |
+            const title = '[自动同步] 上游同步需要处理';
+            const marker = '<!-- personal-upstream-sync -->';
+            const { owner, repo } = context.repo;
+            const issues = await github.paginate(github.rest.issues.listForRepo, { owner, repo, state: 'open', creator: 'github-actions[bot]', per_page: 100 });
+            const existing = issues.find(issue => !issue.pull_request && issue.body?.includes(marker));
+            if (process.env.SYNC_STATUS === 'failure') {
+              const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+              const body = `${marker}\n上游合并、验证或推送失败，自动同步未发布新版本。请查看 [运行日志](${run}) 处理冲突或检查失败后，在 Actions 中重新运行。\n\n机器人不会覆盖分支或强制推送。`;
+              if (existing) await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+              else await github.rest.issues.create({ owner, repo, title, body });
+              core.setFailed('Upstream sync failed; see the linked run and repository issue.');
+            } else if (process.env.SYNC_STATUS === 'success' && existing) {
+              await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed', state_reason: 'completed' });
+            }
