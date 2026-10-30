@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import DashboardPage from './DashboardPage'
 import type { WorkbenchTask } from '@/hooks/useDashboard'
 
@@ -502,6 +502,44 @@ describe('DashboardPage scoring dialog confirm behaviour', () => {
     fireEvent.click(screen.getByText('确认开始评分'))
     await waitFor(() => expect(screen.queryByText('确认开始评分')).toBeNull())
     expect((await screen.findByRole('progressbar', { name: 'AI 评分进度' })).getAttribute('aria-valuenow')).toBe('0')
+  })
+
+  it('refreshes progress, job scores and counts without losing the selection or requiring a page reload', async () => {
+    vi.useFakeTimers()
+    try {
+      let completed = 0
+      const job = { id: 'live-job', company: '测试公司', title: '测试岗位', city: '上海', score: 0, status: 'pending', salary: '20-30K', created_at: '' }
+      const normalFetch = stubDashboardFetch()
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        if (url.startsWith('/api/jobs/search')) return jsonResponse({
+          items: [{ ...job, score: completed ? 88 : 0, status: completed ? 'scored' : 'pending' }],
+          total: completed ? 1 : 2, all_total: 2,
+        })
+        if (url === '/api/workbench') return jsonResponse(baseWorkbench({
+          task: completed === 2 ? null : buildTask({ mode: 'score', metrics: { ai_completed: completed, ai_total: 2 } }),
+          last_task: completed === 2 ? buildTask({ mode: 'score', status: 'completed', metrics: { ai_completed: 2, ai_total: 2 } }) : null,
+        }))
+        return normalFetch(input, init)
+      }))
+      await act(async () => { render(<DashboardPage view="jobs" />) })
+      fireEvent.click(screen.getByRole('checkbox', { name: '选择 测试公司 测试岗位' }))
+      expect(screen.getByText('筛选结果 2 / 总数 2')).toBeTruthy()
+      completed = 1
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(screen.getByRole('progressbar', { name: 'AI 评分进度' }).getAttribute('aria-valuenow')).toBe('50')
+      expect(screen.getByText('88')).toBeTruthy()
+      expect(screen.getByText('筛选结果 1 / 总数 2')).toBeTruthy()
+      expect((screen.getByRole('checkbox', { name: '选择 测试公司 测试岗位' }) as HTMLInputElement).checked).toBe(true)
+      expect(screen.queryByText('加载中…')).toBeNull()
+      completed = 2
+      await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+      expect(screen.getByRole('progressbar', { name: 'AI 评分进度' }).getAttribute('aria-valuenow')).toBe('100')
+      expect(screen.getByText('本轮 AI 评分 · 本轮处理完毕')).toBeTruthy()
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
   })
 
   it('keeps the scoring dialog open and shows the failure inside it when the scoring start fails', async () => {

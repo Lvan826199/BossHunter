@@ -1737,8 +1737,8 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
   const [recycleLoading, setRecycleLoading] = useState(false)
   const [permanentDeleteIds, setPermanentDeleteIds] = useState<string[]>([])
   const [permanentDeleteAcknowledged, setPermanentDeleteAcknowledged] = useState(false)
-  const { items, total, allTotal, cityOptions, loading, error, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
-  const { workbench: deliveryWorkbench, refresh: refreshWorkbench } = useDashboard('workbench')
+  const { items, total, allTotal, cityOptions, loading, error, lastRefreshedAt: jobsRefreshedAt, refresh: refreshJobs } = useJobSearch(filters, page, pageSize, sortBy, sortOrder)
+  const { workbench: deliveryWorkbench, error: progressError, refresh: refreshWorkbench } = useDashboard('workbench')
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
     : deliveryWorkbench.last_task?.mode === 'deliver' ? deliveryWorkbench.last_task : null
@@ -2149,8 +2149,13 @@ function JobsPoolView({ updateJobStatus }: { updateJobStatus: (jobId: string, st
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
       {notice && <div className="mb-4 rounded-xl bg-secondary px-4 py-3 text-sm text-primary">{notice}</div>}
-      <div className="mb-4 empty:hidden">
+      <div className="mb-4">
         <TaskScoringProgress task={deliveryWorkbench.task || deliveryWorkbench.last_task} />
+        <p className="mt-2 text-xs text-muted">
+          岗位与评分进度每 5 秒自动刷新；每完成一个岗位后更新评分计数。
+          {jobsRefreshedAt && ` 岗位更新于 ${jobsRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })}`}
+        </p>
+        {progressError && <p role="alert" className="mt-2 text-xs text-danger">{progressError}</p>}
       </div>
       {deliveryTask && (
         <div className="mb-4 rounded-2xl border border-card-border bg-surface p-4">
